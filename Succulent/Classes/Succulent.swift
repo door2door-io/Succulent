@@ -16,15 +16,17 @@ public struct Configuration {
     public var ignoreParameters: Set<String>?
     ///An array of regular expression strings to match against incoming request paths; matches will not increase the Succulent version even if they use a mutating HTTP method.
     public var ignoreVersioningRequests: [String]?
+    public var forceVersioningRequests: [String]?
     
     public init() {
         
     }
     
-    public init(port: Int? = nil, ignoreParameters: Set<String>? = nil, ignoreVersioningRequests: [String]?) {
+    public init(port: Int? = nil, ignoreParameters: Set<String>? = nil, ignoreVersioningRequests: [String]?, forceVersioningRequests: [String]?) {
         self.port = port
         self.ignoreParameters = ignoreParameters
         self.ignoreVersioningRequests = ignoreVersioningRequests
+        self.forceVersioningRequests = forceVersioningRequests
     }
 }
 
@@ -67,6 +69,7 @@ public class Succulent : NSObject, URLSessionTaskDelegate {
     private var currentTrace = NSMutableOrderedSet()
     private var recordedKeys = Set<String>()
     private var ignoreExpressions: [NSRegularExpression] = []
+    private var versioningExpressions: [NSRegularExpression] = []
 
     ///Initialise Succulent in replay mode, with an optional trace file to replay from, a pass-through URL to use if a match if not found in the trace file, and configuration.
     public convenience init(replayFrom traceUrl: URL?, passThroughBaseUrl baseUrl: URL? = nil, configuration: Configuration? = nil) {
@@ -98,6 +101,11 @@ public class Succulent : NSObject, URLSessionTaskDelegate {
                     return try! NSRegularExpression(pattern: expression, options: [])
                 }
             }
+            if let forceVersioningRequests = configuration.forceVersioningRequests {
+                versioningExpressions = forceVersioningRequests.map { (expression) -> NSRegularExpression in
+                    return try! NSRegularExpression(pattern: expression, options: [])
+                }
+            }
             ignoreParameters = configuration.ignoreParameters
             port = configuration.port
         }
@@ -107,7 +115,13 @@ public class Succulent : NSObject, URLSessionTaskDelegate {
     private func createDefaultRouter() {
         router.add(".*").anyParams().block { (req, resultBlock) in
             /* Increment version when we get the first GET after a mutating http method */
-            if req.method != "GET" && req.method != "HEAD" {
+            var forceVersioning = false
+            for expression in self.versioningExpressions {
+                if let _ = expression.firstMatch(in: req.path, options: [], range: req.path.nsrange) {
+                    forceVersioning = true
+                }
+            }
+            if (req.method != "GET" && req.method != "HEAD") || forceVersioning {
                 
                 // Check if we are to ignore the mutation
                 var shouldIgnore = false
@@ -227,7 +241,14 @@ public class Succulent : NSObject, URLSessionTaskDelegate {
                     let path = file.substring(with: matches[0].range(at: 1))!
                     let query = file.substring(with: matches[0].range(at: 2))
                     
-                    if method != "GET" && method != "HEAD" {
+                    var forceVersioning = false
+                    for expression in versioningExpressions {
+                        if let _ = expression.firstMatch(in: file, options: [], range: file.nsrange) {
+                            forceVersioning = true
+                        }
+                    }
+                    
+                    if (method != "GET" && method != "HEAD") || forceVersioning {
                         // Check if we are to ignore the mutation
                         var shouldIgnore = false
                         for expression in ignoreExpressions {
